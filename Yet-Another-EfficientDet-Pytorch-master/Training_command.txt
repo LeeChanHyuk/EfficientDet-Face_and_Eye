@@ -1,0 +1,1 @@
+python train.py -c 2 -p Face --batch_size 8 --lr 1e-3 --num_epochs 10 --load_weights ./weights/efficientdet-d2.pth
