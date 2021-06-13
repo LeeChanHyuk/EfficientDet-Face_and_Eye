@@ -17,7 +17,7 @@ from utils.utils import preprocess, invert_affine, postprocess, STANDARD_COLORS,
 
 compound_coef = 0
 force_input_size = None  # set None to use default size
-img_path = 'test/img.png'
+img_path = 'test/test1.jpg'
 
 # replace this part with your project's anchor config
 anchor_ratios = [(1.0, 1.0), (1.4, 0.7), (0.7, 1.4)]
@@ -41,6 +41,7 @@ obj_list = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train'
             'laptop', 'mouse', 'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink',
             'refrigerator', '', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier',
             'toothbrush']
+#obj_list = ['Face']
 
 
 color_list = standard_to_bgr(STANDARD_COLORS)
@@ -58,7 +59,7 @@ x = x.to(torch.float32 if not use_float16 else torch.float16).permute(0, 3, 1, 2
 
 model = EfficientDetBackbone(compound_coef=compound_coef, num_classes=len(obj_list),
                              ratios=anchor_ratios, scales=anchor_scales)
-model.load_state_dict(torch.load(f'weights/efficientdet-d{compound_coef}.pth', map_location='cpu'))
+model.load_state_dict(torch.load('./weights/efficientdet-d0.pth', map_location='cpu'))
 model.requires_grad_(False)
 model.eval()
 
@@ -110,11 +111,12 @@ with torch.no_grad():
     t1 = time.time()
     for _ in range(10):
         _, regression, classification, anchors = model(x)
-
+        a1 = time.time()
         out = postprocess(x,
                           anchors, regression, classification,
                           regressBoxes, clipBoxes,
                           threshold, iou_threshold)
+        print((time.time() - a1)/10)
         out = invert_affine(framed_metas, out)
 
     t2 = time.time()

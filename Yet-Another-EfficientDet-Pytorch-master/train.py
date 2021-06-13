@@ -20,7 +20,10 @@ from backbone import EfficientDetBackbone
 from efficientdet.dataset import CocoDataset, Resizer, Normalizer, Augmenter, collater
 from efficientdet.loss import FocalLoss
 from utils.sync_batchnorm import patch_replication_callback
-from utils.utils import replace_w_sync_bn, CustomDataParallel, get_last_weights, init_weights, boolean_string
+from utils.utils import replace_w_sync_bn, CustomDataParallel, get_last_weights, init_weights, boolean_string, postprocess
+from efficientdet.utils import BBoxTransform, ClipBoxes, Anchors_Face_Only
+from efficientdet.model import Regressor_Face_Only, Classifier_Face_Only
+
 
 
 class Params:
@@ -30,13 +33,14 @@ class Params:
     def __getattr__(self, item):
         return self.params.get(item, None)
 
-
+threshold = 0.2
+iou_threshold = 0.2
 def get_args():
     parser = argparse.ArgumentParser('Yet Another EfficientDet Pytorch: SOTA object detection network - Zylo117')
     parser.add_argument('-p', '--project', type=str, default='Face', help='project file that contains parameters')
     parser.add_argument('-c', '--compound_coef', type=int, default=0, help='coefficients of efficientdet')
-    parser.add_argument('-n', '--num_workers', type=int, default=16, help='num_workers of dataloader')
-    parser.add_argument('--batch_size', type=int, default=32, help='The number of images per batch among all devices')
+    parser.add_argument('-n', '--num_workers', type=int, default=0, help='num_workers of dataloader')
+    parser.add_argument('--batch_size', type=int, default=4, help='The number of images per batch among all devices')
     parser.add_argument('--head_only', type=boolean_string, default=False,
                         help='whether finetunes only the regressor and the classifier, '
                              'useful in early stage convergence or small/easy dataset')
@@ -65,14 +69,124 @@ def get_args():
 
 
 class ModelWithLoss(nn.Module):
-    def __init__(self, model, debug=False):
+    def __init__(self, model, compound_coef=0, num_classes=1, debug = False, **kwargs):
         super().__init__()
+        ## kwargs는 적당한 Parameters를 입력하면, 그걸 알아서 적당한 인자에게 전달해주는 듯. 즉 변수명만 맞추면 될 듯.
         self.criterion = FocalLoss()
         self.model = model
         self.debug = debug
+        self.backbone_compound_coef = [0, 1, 2, 3, 4, 5, 6, 6, 7]
+        self.fpn_num_filters = [64, 88, 112, 160, 224, 288, 384, 384, 384]
+        self.fpn_cell_repeats = [3, 4, 5, 6, 7, 7, 8, 8, 8]
+        self.input_sizes = [512, 640, 768, 896, 1024, 1280, 1280, 1536, 1536]
+        self.box_class_repeats = [3, 3, 3, 4, 4, 4, 5, 5, 5]
+        self.pyramid_levels = [5, 5, 5, 5, 5, 5, 5, 5, 6]
+        self.anchor_scale = [4., 4., 4., 4., 4., 4., 4., 5., 4.]
+        self.aspect_ratios = kwargs.get('ratios', [(1.0, 1.0), (1.4, 0.7), (0.7, 1.4)])
+        self.num_scales = len(kwargs.get('scales', [2 ** 0, 2 ** (1.0 / 3.0), 2 ** (2.0 / 3.0)]))
+        self.compound_coef = compound_coef
+        self.num_classes = num_classes
+        conv_channel_coef = {
+            # the channels of P3/P4/P5.
+            0: [40, 112, 320],
+            1: [40, 112, 320],
+            2: [48, 120, 352],
+            3: [48, 136, 384],
+            4: [56, 160, 448],
+            5: [64, 176, 512],
+            6: [72, 200, 576],
+            7: [72, 200, 576],
+            8: [80, 224, 640],
+        }
+
+        num_anchors = len(self.aspect_ratios) * self.num_scales
+
+
+        self.regressor = Regressor_Face_Only(in_channels=self.fpn_num_filters[self.compound_coef], num_anchors=num_anchors,
+                                   num_layers=self.box_class_repeats[self.compound_coef],
+                                   pyramid_levels=self.pyramid_levels[self.compound_coef])
+        self.classifier = Classifier_Face_Only(in_channels=self.fpn_num_filters[self.compound_coef], num_anchors=num_anchors,
+                                     num_classes=num_classes,
+                                     num_layers=self.box_class_repeats[self.compound_coef],
+                                     pyramid_levels=self.pyramid_levels[self.compound_coef])
+
+        self.anchors = Anchors_Face_Only(anchor_scale=self.anchor_scale[compound_coef],
+                               pyramid_levels=(torch.arange(self.pyramid_levels[self.compound_coef]) + 3).tolist(),
+                               **kwargs)
+
 
     def forward(self, imgs, annotations, obj_list=None):
-        _, regression, classification, anchors = self.model(imgs)
+        BiFPN_outputs, regression, classification, anchors = self.model(imgs)
+        regressBoxes = BBoxTransform()
+        clipBoxes = ClipBoxes()
+
+        # Postprocessing for extrating the body's region
+        out = postprocess(imgs,
+                          anchors, regression, classification,
+                          regressBoxes, clipBoxes,
+                          threshold, iou_threshold)
+
+        # Save the body's bounding box result
+        x_mins = []
+        y_mins = []
+        x_maxs = []
+        y_maxs = []
+
+        # [img, xmins, ymins, xmaxs, ymaxs]
+        img_per_roi = []
+
+        for i in range(len(imgs)):
+            img_per_roi.append([x_mins, y_mins, x_maxs, y_maxs])
+            x_mins.clear()
+            y_mins.clear()
+            x_maxs.clear()
+            y_maxs.clear()
+            for j in range(len(out[i]['rois'])):
+                x_min, y_min, x_max, y_max = out[i]['rois'][j].astype(np.int)
+                obj = obj_list[out[i]['class_ids'][j]]
+                score = float(out[i]['scores'][j])
+                x_mins.append(x_min)
+                y_mins.append(y_min)
+                x_maxs.append(x_max)
+                y_maxs.append(y_max)
+
+
+        #################### Should i use the affine function on here? ...
+
+        ## Resample BiFPN weights by the body region
+        resampled_BiFPN_outputs_list = []
+        resampled_BiFPN_outputs_list_per_feature_maps_num = []
+        resampled_BiFPN_outputs_list_per_img = []
+        # BiFPN_outputs = [feature map number, Image number, channel number, height, width]
+        for i in range(len(BiFPN_outputs)): # For the resolution of Feature map
+            # Resize the bounding box coordinates for adapting feature maps which is extracted by BiFPN
+            for j in range(len(imgs)):
+                x_ratio = imgs[j].shape[2] / BiFPN_outputs[i].shape[3]
+                y_ratio = imgs[j].shape[1] / BiFPN_outputs[i].shape[2]
+                x_mins, y_mins, x_maxs, y_maxs = img_per_roi[j]
+                x_mins_resized, x_maxs_resized = [int(x_min / x_ratio) for x_min in x_mins], [int(x_max / x_ratio) for x_max in x_maxs]
+                y_mins_resized, y_maxs_resized = [int(y_min / y_ratio) for y_min in y_mins], [int(y_max / y_ratio) for y_max in y_maxs]
+                for k in range(len(x_maxs)):
+                    print(BiFPN_outputs[i][j].shape)
+                    print(y_maxs_resized[k] - y_mins_resized[k])
+                    print(x_maxs_resized[k] - x_mins_resized[k])
+                    resampled_BiFPN_outputs_list.append(BiFPN_outputs[i][j][:,y_mins_resized[k]:y_maxs_resized[k],x_mins_resized[j]:x_maxs_resized[k]])
+                resampled_BiFPN_outputs_list_per_img.append(resampled_BiFPN_outputs_list.copy())
+                resampled_BiFPN_outputs_list.clear()
+            resampled_BiFPN_outputs_list_per_feature_maps_num.append(resampled_BiFPN_outputs_list_per_img.copy())
+            resampled_BiFPN_outputs_list_per_img.clear()
+
+
+
+
+        # Convert BiFPN outputs to tuple type
+        resampled_BiFPN_outputs = (i for i in resampled_BiFPN_outputs_list_per_feature_maps_num)
+
+        # Feed forward to prediction layers
+        regression = self.regressor(resampled_BiFPN_outputs)
+        classification = self.classifier(resampled_BiFPN_outputs)
+
+
         if self.debug:
             cls_loss, reg_loss = self.criterion(classification, regression, anchors, annotations,
                                                 imgs=imgs, obj_list=obj_list)
@@ -176,19 +290,21 @@ def train(opt):
     writer = SummaryWriter(opt.log_path + f'/{datetime.datetime.now().strftime("%Y%m%d-%H%M%S")}/')
 
     # warp the model with loss function, to reduce the memory usage on gpu0 and speedup
-    model = ModelWithLoss(model, debug=opt.debug)
+    model.requires_grad_(False)
+    model.eval()
+    models = ModelWithLoss(model, debug=opt.debug)
 
     if params.num_gpus > 0:
-        model = model.cuda()
+        models = models.cuda()
         if params.num_gpus > 1:
-            model = CustomDataParallel(model, params.num_gpus)
+            models = CustomDataParallel(models, params.num_gpus)
             if use_sync_bn:
-                patch_replication_callback(model)
+                patch_replication_callback(models)
 
     if opt.optim == 'adamw':
-        optimizer = torch.optim.AdamW(model.parameters(), opt.lr)
+        optimizer = torch.optim.AdamW([{'params':models.classifier.parameters()},{'params':models.regressor.parameters()}], opt.lr)
     else:
-        optimizer = torch.optim.SGD(model.parameters(), opt.lr, momentum=0.9, nesterov=True)
+        optimizer = torch.optim.SGD(models.parameters(), opt.lr, momentum=0.9, nesterov=True)
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, verbose=True)
 
@@ -196,7 +312,7 @@ def train(opt):
     best_loss = 1e5
     best_epoch = 0
     step = max(0, last_step)
-    model.train()
+    models.train()
 
     num_iter_per_epoch = len(training_generator)
 
@@ -223,7 +339,7 @@ def train(opt):
                         annot = annot.cuda()
 
                     optimizer.zero_grad()
-                    cls_loss, reg_loss = model(imgs, annot, obj_list=params.obj_list)
+                    cls_loss, reg_loss = models(imgs, annot, obj_list=params.obj_list)
                     cls_loss = cls_loss.mean()
                     reg_loss = reg_loss.mean()
 
@@ -252,7 +368,7 @@ def train(opt):
                     step += 1
 
                     if step % opt.save_interval == 0 and step > 0:
-                        save_checkpoint(model, f'efficientdet-d{opt.compound_coef}_{epoch}_{step}.pth')
+                        save_checkpoint(models, f'efficientdet-d{opt.compound_coef}_{epoch}_{step}.pth')
                         print('checkpoint...')
 
                 except Exception as e:
@@ -262,7 +378,7 @@ def train(opt):
             scheduler.step(np.mean(epoch_loss))
 
             if epoch % opt.val_interval == 0:
-                model.eval()
+                models.eval()
                 loss_regression_ls = []
                 loss_classification_ls = []
                 for iter, data in enumerate(val_generator):
@@ -274,7 +390,7 @@ def train(opt):
                             imgs = imgs.cuda()
                             annot = annot.cuda()
 
-                        cls_loss, reg_loss = model(imgs, annot, obj_list=params.obj_list)
+                        cls_loss, reg_loss = models(imgs, annot, obj_list=params.obj_list)
                         cls_loss = cls_loss.mean()
                         reg_loss = reg_loss.mean()
 
@@ -300,16 +416,16 @@ def train(opt):
                     best_loss = loss
                     best_epoch = epoch
 
-                    save_checkpoint(model, f'efficientdet-d{opt.compound_coef}_{epoch}_{step}.pth')
+                    save_checkpoint(models, f'efficientdet-d{opt.compound_coef}_{epoch}_{step}.pth')
 
-                model.train()
+                models.train()
 
                 # Early stopping
                 if epoch - best_epoch > opt.es_patience > 0:
                     print('[Info] Stop training at epoch {}. The lowest loss achieved is {}'.format(epoch, best_loss))
                     break
     except KeyboardInterrupt:
-        save_checkpoint(model, f'efficientdet-d{opt.compound_coef}_{epoch}_{step}.pth')
+        save_checkpoint(models, f'efficientdet-d{opt.compound_coef}_{epoch}_{step}.pth')
         writer.close()
     writer.close()
 

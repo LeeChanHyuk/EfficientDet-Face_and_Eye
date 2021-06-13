@@ -211,15 +211,9 @@ class BiFPN(nn.Module):
 
         # Weights for P6_0 and P7_0 to P6_1
         p6_w1 = self.p6_w1_relu(self.p6_w1)
-        relu_Start = time.time()
         weight = p6_w1 / (torch.sum(p6_w1, dim=0) + self.epsilon)
-        relu_end = time.time() - relu_Start
-        print("Normalization = "+str(relu_end))
         # Connections for P6_0 and P7_0 to P6_1 respectively
-        a1 = time.time()
         p6_up = self.conv6_up(self.swish(weight[0] * p6_in + weight[1] * self.p6_upsample(p7_in)))
-        a2 = time.time() - a1
-        print("Feature fusion = "+str(a2))
         # Weights for P5_0 and P6_1 to P5_1
         p5_w1 = self.p5_w1_relu(self.p5_w1)
         weight = p5_w1 / (torch.sum(p5_w1, dim=0) + self.epsilon)
@@ -348,6 +342,82 @@ class BiFPN(nn.Module):
             return p3_out, p4_out, p5_out, p6_out, p7_out
 
 
+class Regressor_Face_Only(nn.Module):
+    """
+    modified by Zylo117
+    """
+
+    def __init__(self, in_channels, num_anchors, num_layers, pyramid_levels=5, onnx_export=False):
+        super(Regressor_Face_Only, self).__init__()
+        self.num_layers = num_layers
+
+        self.conv_list = nn.ModuleList(
+            [SeparableConvBlock(in_channels, in_channels, norm=False, activation=False) for i in range(num_layers)])
+        self.bn_list = nn.ModuleList(
+            [nn.ModuleList([nn.BatchNorm2d(in_channels, momentum=0.01, eps=1e-3) for i in range(num_layers)]) for j in
+             range(pyramid_levels)])
+        self.header = SeparableConvBlock(in_channels, num_anchors * 4, norm=False, activation=False)
+        self.swish = MemoryEfficientSwish() if not onnx_export else Swish()
+
+    def forward(self, inputs):
+        feats = []
+        for feat, bn_list in zip(inputs, self.bn_list):
+            for i, bn, conv in zip(range(self.num_layers), bn_list, self.conv_list):
+                feat = conv(feat)
+                feat = bn(feat)
+                feat = self.swish(feat)
+            feat = self.header(feat)
+
+            feat = feat.permute(0, 2, 3, 1)
+            feat = feat.contiguous().view(feat.shape[0], -1, 4) # 메모리상세서 위치가 바뀐 배열을 정합해주는 코드
+
+            feats.append(feat)
+
+        feats = torch.cat(feats, dim=1)
+
+        return feats
+
+
+class Classifier_Face_Only(nn.Module):
+    """
+    modified by Zylo117
+    """
+
+    def __init__(self, in_channels, num_anchors, num_classes, num_layers, pyramid_levels=5, onnx_export=False):
+        super(Classifier_Face_Only, self).__init__()
+        self.num_anchors = num_anchors
+        self.num_classes = num_classes
+        self.num_layers = num_layers
+        self.conv_list = nn.ModuleList(
+            [SeparableConvBlock(in_channels, in_channels, norm=False, activation=False) for i in range(num_layers)])
+        self.bn_list = nn.ModuleList(
+            [nn.ModuleList([nn.BatchNorm2d(in_channels, momentum=0.01, eps=1e-3) for i in range(num_layers)]) for j in
+             range(pyramid_levels)])
+        self.header = SeparableConvBlock(in_channels, num_anchors * num_classes, norm=False, activation=False)
+        self.swish = MemoryEfficientSwish() if not onnx_export else Swish()
+
+    def forward(self, inputs):
+        feats = []
+        for feat, bn_list in zip(inputs, self.bn_list):
+            for i, bn, conv in zip(range(self.num_layers), bn_list, self.conv_list):
+                feat = conv(feat)
+                feat = bn(feat)
+                feat = self.swish(feat)
+            feat = self.header(feat)
+
+            feat = feat.permute(0, 2, 3, 1)
+            feat = feat.contiguous().view(feat.shape[0], feat.shape[1], feat.shape[2], self.num_anchors,
+                                          self.num_classes)
+            feat = feat.contiguous().view(feat.shape[0], -1, self.num_classes)
+
+            feats.append(feat)
+
+        feats = torch.cat(feats, dim=1)
+        feats = feats.sigmoid()
+
+        return feats
+
+
 class Regressor(nn.Module):
     """
     modified by Zylo117
@@ -422,8 +492,6 @@ class Classifier(nn.Module):
         feats = feats.sigmoid()
 
         return feats
-
-
 class EfficientNet(nn.Module):
     """
     modified by Zylo117
