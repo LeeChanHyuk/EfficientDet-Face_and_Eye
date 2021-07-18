@@ -6,6 +6,8 @@ from efficientnet import EfficientNet as EffNet
 from efficientnet.utils import MemoryEfficientSwish, Swish
 from efficientnet.utils_extra import Conv2dStaticSamePadding, MaxPool2dStaticSamePadding
 import time
+import torch.nn.functional as F
+import numpy as np
 
 
 def nms(dets, thresh):
@@ -359,23 +361,74 @@ class Regressor_Face_Only(nn.Module):
         self.header = SeparableConvBlock(in_channels, num_anchors * 4, norm=False, activation=False)
         self.swish = MemoryEfficientSwish() if not onnx_export else Swish()
 
+        self.feature_map_minimum_size = [8, 7, 6, 5, 4]
+        self.normal_conv = nn.Conv2d(in_channels, in_channels, 3, stride=1)
+
+
     def forward(self, inputs):
-        feats = []
-        for feat, bn_list in zip(inputs, self.bn_list):
+        new_feats = []
+        normal_conv = self.normal_conv
+        # fpn 별로, image 별로, anchor별, 채널, 로 다 따로? 그럼 같은건 채널밖에 없는데>?ㅋㅋㅋㅋㅋ
+        temp_feat_index = 0
+        for featss, bn_list, size in zip(inputs, self.bn_list, self.feature_map_minimum_size): # Pyramid level
+            if not featss[temp_feat_index]:
+                continue
+            temp_feat = []
+            for j, image_map in enumerate(featss): # Image level # 결국에는 depthwise convolution으로 넘겨주는 인자는 Image 여러개를 포함한 level이 되어야 한다.
+                temp_image_map = []
+                for i, anchor_map in enumerate(image_map):
+                    feat = torch.unsqueeze(anchor_map,0)
+                    print(feat.shape)
+                    if feat.shape[2] % 2 != (size % 2) and feat.shape[3] % 2 != (size % 2): # width and height is different with size
+                        if feat.shape[2] <= size and feat.shape[3] <= size:
+                            print("error")
+                        pad = torch.nn.ZeroPad2d((1,0,1,0))
+                        feat = normal_conv(pad(feat))
+                    elif feat.shape[2] % 2 != (size % 2): # height is different with size
+                        if feat.shape[2] <= size and feat.shape[3] <= size:
+                            print("error")
+                        pad = torch.nn.ZeroPad2d((1,1,1,0))
+                        feat = normal_conv(pad(feat))
+                    elif feat.shape[3] % 2 != (size % 2): # width is different with size
+                        if feat.shape[2] <= size and feat.shape[3] <= size:
+                            print("error")
+                        pad = torch.nn.ZeroPad2d((1,0,1,1))
+                        feat = normal_conv(pad(feat))
+                    while 1:
+                        if feat.shape[2] > size and feat.shape[3] > size: # 0-channel, 1-height, 2-width
+                            if feat.shape[2] <= size and feat.shape[3] <= size:
+                                print("error")
+                            feat = normal_conv(feat)
+                        elif feat.shape[2] > size:
+                            if feat.shape[2] <= size and feat.shape[3] <= size:
+                                print("error")
+                            pad = torch.nn.ZeroPad2d((1,1,0,0))
+                            feat = normal_conv(pad(feat))
+                        elif feat.shape[3] > size:
+                            if feat.shape[2] <= size and feat.shape[3] <= size:
+                                print("error")
+                            pad = torch.nn.ZeroPad2d((0,0,1,1))
+                            feat = normal_conv(pad(feat))
+                        else:
+                            break
+                    image_map[i]= torch.squeeze(feat)
+                featss[j] = torch.stack([k for k in image_map])
+            #temp_feat.append(torch.stack([i for i in featss]))
+            new_feat = torch.cat([i for i in featss], dim=0)
+            #temp_feat_index += 1
             for i, bn, conv in zip(range(self.num_layers), bn_list, self.conv_list):
-                feat = conv(feat)
-                feat = bn(feat)
-                feat = self.swish(feat)
-            feat = self.header(feat)
+                new_feat = conv(new_feat)
+                new_feat = bn(new_feat)
+                new_feat = self.swish(new_feat)
+            new_feat = self.header(new_feat)
+            new_feat = new_feat.permute(0, 2, 3, 1)
+            new_feat = new_feat.contiguous().view(new_feat.shape[0], -1, 4) # 메모리상세서 위치가 바뀐 배열을 정합해주는 코드
 
-            feat = feat.permute(0, 2, 3, 1)
-            feat = feat.contiguous().view(feat.shape[0], -1, 4) # 메모리상세서 위치가 바뀐 배열을 정합해주는 코드
+            new_feats.append(new_feat)
 
-            feats.append(feat)
+        feats_tensor = torch.cat(new_feats, dim=1)
 
-        feats = torch.cat(feats, dim=1)
-
-        return feats
+        return feats_tensor
 
 
 class Classifier_Face_Only(nn.Module):

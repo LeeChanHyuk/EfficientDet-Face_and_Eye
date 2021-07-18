@@ -89,9 +89,11 @@ for txt in os.listdir(annotation_path):
     left_eye_height = abs(left_eye[0] - left_eye[2]) + 1
     right_eye_width = abs(right_eye[3] - right_eye[1]) + 1
     right_eye_height = abs(right_eye[0] - right_eye[2]) + 1
+    if (left_eye_width * left_eye_height) / (img.shape[0] * img.shape[1]) < 0.001 or (right_eye_width * right_eye_height) / (img.shape[0] * img.shape[1]) < 0.001 or left_eye_height*left_eye_width < 100 or right_eye_height * right_eye_width < 100:
+        continue
     image_annotations.append({'id':int(image_name_without_jpg), 'bbox':[face[0], face[1], face_height, face_width], "image_id":int(image_name_without_jpg),'area':face_width*face_height, 'category_id': 1, 'iscrowd':0})
-    image_annotations.append({'id':int(image_name_without_jpg), 'bbox':[left_eye[0], left_eye[1], left_eye_height, left_eye_width], "image_id":int(image_name_without_jpg),'area':left_eye_width*left_eye_height, 'category_id': 2, 'iscrowd':0})
-    image_annotations.append({'id':int(image_name_without_jpg), 'bbox':[right_eye[0], right_eye[1], right_eye_height, right_eye_width], "image_id":int(image_name_without_jpg),'area':right_eye_width*right_eye_height, 'category_id': 3, 'iscrowd':0})
+    #image_annotations.append({'id':int(image_name_without_jpg), 'bbox':[left_eye[0]-5, left_eye[1]-5, left_eye_height+5, left_eye_width+5], "image_id":int(image_name_without_jpg),'area':left_eye_width*left_eye_height, 'category_id': 2, 'iscrowd':0})
+    #image_annotations.append({'id':int(image_name_without_jpg), 'bbox':[right_eye[0]-5, right_eye[1]-5, right_eye_height+5, right_eye_width+5], "image_id":int(image_name_without_jpg),'area':right_eye_width*right_eye_height, 'category_id': 3, 'iscrowd':0})
     #cv2.rectangle(img,(left_eye[1],left_eye[0]), (left_eye[3],left_eye[2]), (0,0,255), 3)
     img2 = cv2.resize(img,dsize=(640,640))
     cv2.imshow("image",img2)

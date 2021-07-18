@@ -88,11 +88,12 @@ def preprocess_video(*frame_from_video, max_size=512, mean=(0.406, 0.456, 0.485)
 
 
 def postprocess(x, anchors, regression, classification, regressBoxes, clipBoxes, threshold, iou_threshold):
-    transformed_anchors = regressBoxes(anchors, regression)
-    transformed_anchors = clipBoxes(transformed_anchors, x)
-    classification[:,:,1:] = 0
-    scores = torch.max(classification, dim=2, keepdim=True)[0] # Original code
-    scores_over_thresh = (scores > threshold)[:, :, 0]
+    # [batch_size, anchor_number, coordinates]
+    transformed_anchors = regressBoxes(anchors, regression) #[img_num, anchor_num, classes_num]
+    transformed_anchors = clipBoxes(transformed_anchors, x) # cliping the bounding box
+    classification[:,:,1:] = 0 # Only person-label ok
+    scores = torch.max(classification, dim=2, keepdim=True)[0] # Original code # [img_num, anchor_num, 1(max_class_Score)]
+    scores_over_thresh = (scores > threshold)[:, :, 0] # [img_num, lived anchor_num]
     out = []
     for i in range(x.shape[0]):
         if scores_over_thresh[i].sum() == 0:
@@ -103,11 +104,11 @@ def postprocess(x, anchors, regression, classification, regressBoxes, clipBoxes,
             })
             continue
 
-        classification_per = classification[i, scores_over_thresh[i, :], ...].permute(1, 0)
-        transformed_anchors_per = transformed_anchors[i, scores_over_thresh[i, :], ...]
-        scores_per = scores[i, scores_over_thresh[i, :], ...]
-        scores_, classes_ = classification_per.max(dim=0)
-        anchors_nms_idx = batched_nms(transformed_anchors_per, scores_per[:, 0], classes_, iou_threshold=iou_threshold)
+        classification_per = classification[i, scores_over_thresh[i, :], ...].permute(1, 0) #[class_num, lived anchor]
+        transformed_anchors_per = transformed_anchors[i, scores_over_thresh[i, :], ...] # [lived anchor, coordinates]
+        scores_per = scores[i, scores_over_thresh[i, :], ...] #[lived anchor, scores]
+        scores_, classes_ = classification_per.max(dim=0) # anchors_num (having the class)
+        anchors_nms_idx = batched_nms(transformed_anchors_per, scores_per[:, 0], classes_, iou_threshold=iou_threshold) # NMS 거치고 난 후 살아남은 anchor의 number 반환하는 듯
 
         if anchors_nms_idx.shape[0] != 0:
             classes_ = classes_[anchors_nms_idx]

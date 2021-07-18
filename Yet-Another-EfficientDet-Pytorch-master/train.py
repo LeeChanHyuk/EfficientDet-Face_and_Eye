@@ -41,7 +41,7 @@ def get_args():
     parser.add_argument('-c', '--compound_coef', type=int, default=0, help='coefficients of efficientdet')
     parser.add_argument('-n', '--num_workers', type=int, default=0, help='num_workers of dataloader')
     parser.add_argument('--batch_size', type=int, default=4, help='The number of images per batch among all devices')
-    parser.add_argument('--head_only', type=boolean_string, default=False,
+    parser.add_argument('--head_only', type=boolean_string, default=True,
                         help='whether finetunes only the regressor and the classifier, '
                              'useful in early stage convergence or small/easy dataset')
     parser.add_argument('--lr', type=float, default=1e-4)
@@ -121,6 +121,7 @@ class ModelWithLoss(nn.Module):
         clipBoxes = ClipBoxes()
 
         # Postprocessing for extrating the body's region
+        # out shape = [image_num, roi_num, 세부 항목]
         out = postprocess(imgs,
                           anchors, regression, classification,
                           regressBoxes, clipBoxes,
@@ -136,11 +137,11 @@ class ModelWithLoss(nn.Module):
         img_per_roi = []
 
         for i in range(len(imgs)):
-            img_per_roi.append([x_mins, y_mins, x_maxs, y_maxs])
             x_mins.clear()
             y_mins.clear()
             x_maxs.clear()
             y_maxs.clear()
+            # out의 i번째 이미지의 roi들
             for j in range(len(out[i]['rois'])):
                 x_min, y_min, x_max, y_max = out[i]['rois'][j].astype(np.int)
                 obj = obj_list[out[i]['class_ids'][j]]
@@ -149,7 +150,9 @@ class ModelWithLoss(nn.Module):
                 y_mins.append(y_min)
                 x_maxs.append(x_max)
                 y_maxs.append(y_max)
+            img_per_roi.append([x_mins.copy(), y_mins.copy(), x_maxs.copy(), y_maxs.copy()]) # Body bounding box coordinates
 
+        ## img_per_roi.shape = [img_num, 4(x_min...y_max), detected anchor num]
 
         #################### Should i use the affine function on here? ...
 
@@ -157,8 +160,10 @@ class ModelWithLoss(nn.Module):
         resampled_BiFPN_outputs_list = []
         resampled_BiFPN_outputs_list_per_feature_maps_num = []
         resampled_BiFPN_outputs_list_per_img = []
+        feature_map_minimum_size = [8, 7, 6, 5, 4]
         # BiFPN_outputs = [feature map number, Image number, channel number, height, width]
-        for i in range(len(BiFPN_outputs)): # For the resolution of Feature map
+        for i in range(len(BiFPN_outputs)): # For the resolution of Feature map /
+            # [feature_maps, images, channels, height, width]
             # Resize the bounding box coordinates for adapting feature maps which is extracted by BiFPN
             for j in range(len(imgs)):
                 x_ratio = imgs[j].shape[2] / BiFPN_outputs[i].shape[3]
@@ -166,11 +171,44 @@ class ModelWithLoss(nn.Module):
                 x_mins, y_mins, x_maxs, y_maxs = img_per_roi[j]
                 x_mins_resized, x_maxs_resized = [int(x_min / x_ratio) for x_min in x_mins], [int(x_max / x_ratio) for x_max in x_maxs]
                 y_mins_resized, y_maxs_resized = [int(y_min / y_ratio) for y_min in y_mins], [int(y_max / y_ratio) for y_max in y_maxs]
-                for k in range(len(x_maxs)):
+                # Re-proposal of feature map which is extracted by pyramid feature map by using predicted bounding boxes.
+                for k in range(len(x_mins_resized)):
+                    while 1:
+                        num_x = 0
+                        if (x_maxs_resized[k] - x_mins_resized[k]) < feature_map_minimum_size[i]:
+                            if num_x % 2 == 0:
+                                x_maxs_resized[k] += 1
+                                if x_maxs_resized[k] > imgs[j].shape[2]:
+                                    x_maxs_resized[k] -= 1
+                            else:
+                                x_mins_resized[k] -= 1
+                                if x_mins_resized[k] < 0:
+                                    x_mins_resized += 1
+                            num_x += 1
+                        else:
+                            break
+                    while 1:
+                        num_y = 0
+                        if (y_maxs_resized[k] - y_mins_resized[k]) < feature_map_minimum_size[i]:
+                            if num_y % 2 == 0:
+                                y_maxs_resized[k] += 1
+                                if y_maxs_resized[k] > imgs[j].shape[1]:
+                                    y_maxs_resized[k] -= 1
+                            else:
+                                y_mins_resized[k] -= 1
+                                if y_mins_resized[k] < 0:
+                                    y_mins_resized += 1
+                            num_y += 1
+                        else:
+                            break
+                for k in range(len(x_maxs)): # 여기서 앵커 개수에 따라서 피처맵을 차등 분류한다.
+                    # 여기서 최소 크기를 지켜주고, regression 및 classification 할 때 Conv로 차원읆 맞춰줘야할 듯 하다.
                     print(BiFPN_outputs[i][j].shape)
                     print(y_maxs_resized[k] - y_mins_resized[k])
                     print(x_maxs_resized[k] - x_mins_resized[k])
-                    resampled_BiFPN_outputs_list.append(BiFPN_outputs[i][j][:,y_mins_resized[k]:y_maxs_resized[k],x_mins_resized[j]:x_maxs_resized[k]])
+                    resampled_BiFPN_outputs_list.append(BiFPN_outputs[i][j][:,y_mins_resized[k]:y_maxs_resized[k],x_mins_resized[k]:x_maxs_resized[k]])
+                    print("shape")
+                    print(resampled_BiFPN_outputs_list[len(resampled_BiFPN_outputs_list)-1].shape)
                 resampled_BiFPN_outputs_list_per_img.append(resampled_BiFPN_outputs_list.copy())
                 resampled_BiFPN_outputs_list.clear()
             resampled_BiFPN_outputs_list_per_feature_maps_num.append(resampled_BiFPN_outputs_list_per_img.copy())
@@ -180,7 +218,7 @@ class ModelWithLoss(nn.Module):
 
 
         # Convert BiFPN outputs to tuple type
-        resampled_BiFPN_outputs = (i for i in resampled_BiFPN_outputs_list_per_feature_maps_num)
+        resampled_BiFPN_outputs = tuple(resampled_BiFPN_outputs_list_per_feature_maps_num)
 
         # Feed forward to prediction layers
         regression = self.regressor(resampled_BiFPN_outputs)
