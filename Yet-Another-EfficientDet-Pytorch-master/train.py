@@ -136,12 +136,14 @@ class ModelWithLoss(nn.Module):
         # [img, xmins, ymins, xmaxs, ymaxs]
         img_per_roi = []
 
+        ############## Extract the bounding box coordinate of the human in the images with batch sizes #############################
+        # i = image
         for i in range(len(imgs)):
             x_mins.clear()
             y_mins.clear()
             x_maxs.clear()
             y_maxs.clear()
-            # out의 i번째 이미지의 roi들
+            # 'j' is the order of rois in the 'out array'
             for j in range(len(out[i]['rois'])):
                 x_min, y_min, x_max, y_max = out[i]['rois'][j].astype(np.int)
                 obj = obj_list[out[i]['class_ids'][j]]
