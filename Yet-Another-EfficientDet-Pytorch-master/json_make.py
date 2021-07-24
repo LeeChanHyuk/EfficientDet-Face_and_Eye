@@ -94,10 +94,13 @@ for txt in os.listdir(annotation_path):
     image_annotations.append({'id':int(image_name_without_jpg), 'bbox':[face[0], face[1], face_height, face_width], "image_id":int(image_name_without_jpg),'area':face_width*face_height, 'category_id': 1, 'iscrowd':0})
     #image_annotations.append({'id':int(image_name_without_jpg), 'bbox':[left_eye[0]-5, left_eye[1]-5, left_eye_height+5, left_eye_width+5], "image_id":int(image_name_without_jpg),'area':left_eye_width*left_eye_height, 'category_id': 2, 'iscrowd':0})
     #image_annotations.append({'id':int(image_name_without_jpg), 'bbox':[right_eye[0]-5, right_eye[1]-5, right_eye_height+5, right_eye_width+5], "image_id":int(image_name_without_jpg),'area':right_eye_width*right_eye_height, 'category_id': 3, 'iscrowd':0})
-    #cv2.rectangle(img,(left_eye[1],left_eye[0]), (left_eye[3],left_eye[2]), (0,0,255), 3)
+    cv2.rectangle(img,(left_eye[1],left_eye[0]), (left_eye[3],left_eye[2]), (0,0,255), 3)
+    img_size = img.shape[0] * img.shape[1]
+    eye_size = (left_eye[3] - left_eye[1] + 1) * (left_eye[2] - left_eye[0] + 1)
+    print("img size = " + str(img_size) + " eye size = " + str(eye_size) + " ratio = " + str(img_size / eye_size))
     img2 = cv2.resize(img,dsize=(640,640))
     cv2.imshow("image",img2)
-    cv2.waitKey(1)
+    cv2.waitKey(0)
 file_data['annotations'] = image_annotations
 file_data['images'] = image_informations
 print(json.dumps(file_data, ensure_ascii=False, indent='\t'))

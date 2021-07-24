@@ -23,6 +23,7 @@ from utils.sync_batchnorm import patch_replication_callback
 from utils.utils import replace_w_sync_bn, CustomDataParallel, get_last_weights, init_weights, boolean_string, postprocess
 from efficientdet.utils import BBoxTransform, ClipBoxes, Anchors_Face_Only
 from efficientdet.model import Regressor_Face_Only, Classifier_Face_Only
+from efficientdet.model_original import Regressor
 
 
 
@@ -117,6 +118,12 @@ class ModelWithLoss(nn.Module):
 
     def forward(self, imgs, annotations, obj_list=None):
         BiFPN_outputs, regression, classification, anchors = self.model(imgs)
+        """if self.debug:
+            cls_loss, reg_loss = self.criterion(classification, regression, anchors, annotations,
+                                                imgs=imgs, obj_list=obj_list)
+        else:
+            cls_loss, reg_loss = self.criterion(classification, regression, anchors, annotations)
+        return cls_loss, reg_loss"""
         regressBoxes = BBoxTransform()
         clipBoxes = ClipBoxes()
 
@@ -136,7 +143,7 @@ class ModelWithLoss(nn.Module):
         # [img, xmins, ymins, xmaxs, ymaxs]
         img_per_roi = []
 
-        ############## Extract the bounding box coordinate of the human in the images with batch sizes #############################
+        ############## Extract the bounding box coordinate of the human in the images with batch sizes ###
         # i = image
         for i in range(len(imgs)):
             x_mins.clear()
@@ -164,45 +171,34 @@ class ModelWithLoss(nn.Module):
         resampled_BiFPN_outputs_list_per_img = []
         feature_map_minimum_size = [8, 7, 6, 5, 4]
         # BiFPN_outputs = [feature map number, Image number, channel number, height, width]
+        ## i is the pyramid's number
         for i in range(len(BiFPN_outputs)): # For the resolution of Feature map /
             # [feature_maps, images, channels, height, width]
             # Resize the bounding box coordinates for adapting feature maps which is extracted by BiFPN
+            # j is the batch size's index
             for j in range(len(imgs)):
+                ## The bounding box's coordinate's resize process
                 x_ratio = imgs[j].shape[2] / BiFPN_outputs[i].shape[3]
                 y_ratio = imgs[j].shape[1] / BiFPN_outputs[i].shape[2]
                 x_mins, y_mins, x_maxs, y_maxs = img_per_roi[j]
                 x_mins_resized, x_maxs_resized = [int(x_min / x_ratio) for x_min in x_mins], [int(x_max / x_ratio) for x_max in x_maxs]
                 y_mins_resized, y_maxs_resized = [int(y_min / y_ratio) for y_min in y_mins], [int(y_max / y_ratio) for y_max in y_maxs]
-                # Re-proposal of feature map which is extracted by pyramid feature map by using predicted bounding boxes.
+                # Re-proposal of feature map which is extracted by pyramid feature map by using predicted bounding boxes
+
+                # k is the bpunding box's number in one image
                 for k in range(len(x_mins_resized)):
-                    while 1:
-                        num_x = 0
-                        if (x_maxs_resized[k] - x_mins_resized[k]) < feature_map_minimum_size[i]:
-                            if num_x % 2 == 0:
-                                x_maxs_resized[k] += 1
-                                if x_maxs_resized[k] > imgs[j].shape[2]:
-                                    x_maxs_resized[k] -= 1
-                            else:
-                                x_mins_resized[k] -= 1
-                                if x_mins_resized[k] < 0:
-                                    x_mins_resized += 1
-                            num_x += 1
+                    if x_mins_resized[k] >= x_maxs_resized[k]:
+                        # if the minimum x value of bounding box is bigger than feature map size
+                        if x_mins_resized[k] >= feature_map_minimum_size[i]:
+                            x_mins_resized[k] = feature_map_minimum_size[i] - 2
+                            x_maxs_resized[k] = feature_map_minimum_size[i]
+                        elif x_maxs_resized[k] <= 0:
+                            x_mins_resized[k] = 0
+                            x_maxs_resized[k] = 1
                         else:
-                            break
-                    while 1:
-                        num_y = 0
-                        if (y_maxs_resized[k] - y_mins_resized[k]) < feature_map_minimum_size[i]:
-                            if num_y % 2 == 0:
-                                y_maxs_resized[k] += 1
-                                if y_maxs_resized[k] > imgs[j].shape[1]:
-                                    y_maxs_resized[k] -= 1
-                            else:
-                                y_mins_resized[k] -= 1
-                                if y_mins_resized[k] < 0:
-                                    y_mins_resized += 1
-                            num_y += 1
-                        else:
-                            break
+                            x_maxs_resized[k] = x_mins_resized[k]
+                            x_mins_resized[k] -= 1
+
                 for k in range(len(x_maxs)): # 여기서 앵커 개수에 따라서 피처맵을 차등 분류한다.
                     # 여기서 최소 크기를 지켜주고, regression 및 classification 할 때 Conv로 차원읆 맞춰줘야할 듯 하다.
                     print(BiFPN_outputs[i][j].shape)
