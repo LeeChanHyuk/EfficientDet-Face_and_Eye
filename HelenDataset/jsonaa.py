@@ -19,8 +19,8 @@ file_data["categories"] = caterories
 image_annotations = []
 image_informations = []
 # Define the path
-annotation_path = './annotation/annotation'
-train_image_path = './train_image/'
+annotation_path = './annotation_file'
+train_image_path = './trainimage/'
 
 for txt in os.listdir(annotation_path):
     print(txt)
@@ -28,6 +28,7 @@ for txt in os.listdir(annotation_path):
     # Helen dataset's extension is jpg
     image_name_without_jpg = f.readline().strip('\n')
     image_name = image_name_without_jpg + '.jpg'
+    image_name = image_name.replace('_','')
     img = cv2.imread(train_image_path+image_name)
     image_informations.append({'file_name':image_name, 'height':str(img.shape[0]), 'width':str(img.shape[1]), 'id':image_name_without_jpg})
     # Each list is consisted by left-top-y, left-top-x, right-down-y, right-down-x
@@ -82,6 +83,9 @@ for txt in os.listdir(annotation_path):
     image_annotations.append({'id':image_name_without_jpg, 'bbox':[face[0], face[1], face_height, face_width], "image_id":image_name_without_jpg,'area':face_width*face_height, 'category_id': 1})
     image_annotations.append({'id':image_name_without_jpg, 'bbox':[left_eye[0], left_eye[1], left_eye_height, left_eye_width], "image_id":image_name_without_jpg,'area':left_eye_width*left_eye_height, 'category_id': 2})
     image_annotations.append({'id':image_name_without_jpg, 'bbox':[right_eye[0], right_eye[1], right_eye_height, right_eye_width], "image_id":image_name_without_jpg,'area':right_eye_width*right_eye_height, 'category_id': 3})
+    drawed_img = cv2.rectangle(img,(left_eye[1], left_eye[0]), (left_eye[1] + left_eye_width, left_eye[0] + left_eye_height), (255,0,0), 3)
+    cv2.imshow("drawed_img", drawed_img)
+    cv2.waitKey(0)
 file_data['annotations'] = image_annotations
 file_data['images'] = image_informations
 print(json.dumps(file_data, ensure_ascii=False, indent='\t'))
